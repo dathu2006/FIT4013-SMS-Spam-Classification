@@ -4,3 +4,4 @@ __pycache__/
 .ipynb_checkpoints/
 chat_history.json
 users_db.json
+.ipynb_checkpoints/

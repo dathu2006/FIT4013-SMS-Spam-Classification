@@ -1,10 +1,12 @@
+import csv
 import html
+import io
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 import joblib
-import numpy as np
+import pandas as pd
 import streamlit as st
 
 try:
@@ -15,22 +17,28 @@ except ImportError:
 
 # --- CẤU HÌNH TRANG WEB ---
 st.set_page_config(
-    page_title="SafeChat Pro | Nền tảng Nhắn tin Đa ngôn ngữ Chống Spam AI",
+    page_title="SafeChat Pro | Lọc Tin Nhắn Rác Đa Ngôn Ngữ",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] {
+    display: none !important;
+}
 header {background-color: transparent !important;}
 
 .stApp {
     background: radial-gradient(circle at top right, #131c31 0%, #090d16 100%);
     color: #f3f4f6;
+}
+
+[data-testid="stSidebar"] {
+    background-color: #0b101d;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 /* Card Đăng nhập */
@@ -58,25 +66,6 @@ header {background-color: transparent !important;}
     margin-bottom: 1.5rem;
 }
 
-/* Top Navbar */
-.top-nav {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.8rem 1.4rem;
-    background: #131b2e;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 14px;
-    margin-bottom: 1rem;
-}
-.nav-logo {
-    font-size: 1.25rem;
-    font-weight: 800;
-    background: linear-gradient(90deg, #38bdf8, #818cf8);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-
 /* Khung Chat */
 .chat-container {
     background: #0d1322;
@@ -88,7 +77,7 @@ header {background-color: transparent !important;}
     display: flex;
     flex-direction: column;
     gap: 14px;
-    margin-bottom: 0.8rem;
+    margin-bottom: 0.7rem;
 }
 .msg-right {
     display: flex;
@@ -175,28 +164,59 @@ header {background-color: transparent !important;}
 /* Highlight từ khóa */
 .hl-box {
     background: #090e1a;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 10px;
-    padding: 10px 12px;
-    line-height: 1.85;
-    font-size: 0.9rem;
+    padding: 12px 14px;
+    line-height: 1.9;
+    font-size: 0.92rem;
     margin-bottom: 10px;
 }
 .tok-spam {
-    background: rgba(239, 68, 68, 0.28);
-    color: #fecaca;
-    border-bottom: 2px solid #ef4444;
-    padding: 1px 5px;
-    border-radius: 5px;
+    background: rgba(239, 68, 68, 0.35);
+    color: #ffffff;
+    border: 1px solid rgba(248, 113, 113, 0.7);
+    padding: 2px 6px;
+    border-radius: 6px;
     font-weight: 600;
 }
 .tok-ham {
-    background: rgba(16, 185, 129, 0.22);
-    color: #a7f3d0;
-    border-bottom: 2px solid #10b981;
-    padding: 1px 5px;
-    border-radius: 5px;
+    background: rgba(16, 185, 129, 0.28);
+    color: #ecfdf5;
+    border: 1px solid rgba(52, 211, 153, 0.6);
+    padding: 2px 6px;
+    border-radius: 6px;
     font-weight: 600;
+}
+.risk-badge {
+    display: inline-block;
+    background: rgba(245, 158, 11, 0.18);
+    color: #fcd34d;
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    margin: 2px 4px 6px 0;
+}
+.kw-chip-spam {
+    display: inline-block;
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    font-size: 0.74rem;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin: 2px 4px 2px 0;
+}
+.kw-chip-ham {
+    display: inline-block;
+    background: rgba(16, 185, 129, 0.15);
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    font-size: 0.74rem;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin: 2px 4px 2px 0;
 }
 
 .stTextInput input {
@@ -218,51 +238,28 @@ header {background-color: transparent !important;}
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "models" / "mnb_spam_classifier.joblib"
 VEC_PATH = BASE_DIR / "models" / "tfidf_vectorizer.joblib"
-USERS_DB_PATH = BASE_DIR / "users_db.json"
-CHAT_DB_PATH = BASE_DIR / "chat_history.json"
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+USERS_DB_PATH = DATA_DIR / "users_db.json"
+CHAT_DB_PATH = DATA_DIR / "chat_history.json"
+FEEDBACK_CSV_PATH = DATA_DIR / "feedback_errors.csv"
 
 OFFLINE_VI_EN_DICT = {
-    "cảnh báo": "urgent warning",
-    "khẩn cấp": "urgent",
-    "chúc mừng": "congratulations",
-    "trúng thưởng": "won prize",
-    "giải thưởng": "cash prize reward",
-    "tiền mặt": "cash money",
-    "triệu đồng": "million vnd cash",
-    "tài khoản ngân hàng": "bank account",
-    "tài khoản": "account",
-    "đăng nhập": "login",
-    "thiết bị lạ": "unknown device",
-    "truy cập ngay": "click link now",
-    "bấm vào": "click here",
-    "xác minh": "verify account",
-    "khóa thẻ": "lock card",
-    "gọi ngay": "call now",
-    "gọi": "call",
-    "nhận quà": "claim free gift",
-    "nhận giải": "claim prize",
-    "miễn phí": "free",
-    "khuyến mãi": "free promotion",
-    "vay vốn": "instant cash loan",
-    "thuê bao": "mobile subscriber",
-    "bưu kiện": "package delivery",
-    "giao không thành công": "delivery failed",
-    "sai địa chỉ": "wrong address",
-    "cập nhật thông tin": "update your details immediately",
-    "hoàn trả hàng": "return package",
-    "tuyển gấp": "urgent hiring",
-    "việc nhẹ lương cao": "easy work high salary",
-    "thu nhập": "cash income",
-    "liên hệ": "contact call",
-    "chào bạn": "hey friend",
-    "tối nay": "tonight",
-    "chiều nay": "this afternoon",
-    "họp nhóm": "group meeting",
-    "báo cáo": "report",
-    "thư viện": "library",
-    "gửi file": "send file",
-    "lâu rồi không gặp": "long time no see",
-    "xem ảnh": "check out photos",
+    "cảnh báo": "urgent warning", "khẩn cấp": "urgent", "chúc mừng": "congratulations",
+    "trúng thưởng": "won prize", "giải thưởng": "cash prize reward", "tiền mặt": "cash money",
+    "triệu đồng": "million vnd cash", "tài khoản ngân hàng": "bank account", "tài khoản": "account",
+    "đăng nhập": "login", "thiết bị lạ": "unknown device", "truy cập ngay": "click link now",
+    "bấm vào": "click here", "xác minh": "verify account", "khóa thẻ": "lock card",
+    "gọi ngay": "call now", "gọi": "call", "nhận quà": "claim free gift",
+    "nhận giải": "claim prize", "miễn phí": "free", "khuyến mãi": "free promotion",
+    "vay vốn": "instant cash loan", "thuê bao": "mobile subscriber", "bưu kiện": "package delivery",
+    "giao không thành công": "delivery failed", "sai địa chỉ": "wrong address",
+    "cập nhật thông tin": "update your details immediately", "hoàn trả hàng": "return package",
+    "tuyển gấp": "urgent hiring", "việc nhẹ lương cao": "easy work high salary",
+    "thu nhập": "cash income", "liên hệ": "contact call", "chào bạn": "hey friend",
+    "tối nay": "tonight", "chiều nay": "this afternoon", "họp nhóm": "group meeting",
+    "báo cáo": "report", "thư viện": "library", "gửi file": "send file",
+    "lâu rồi không gặp": "long time no see", "xem ảnh": "check out photos",
 }
 
 
@@ -276,7 +273,6 @@ def fallback_offline_translate(text: str) -> str:
 
 
 def detect_source_lang(text: str) -> str:
-    """Nhận diện nhanh mã ngôn ngữ để truyền chuẩn xác cho API dịch nguyên câu."""
     if re.search(r'[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]', text.lower()):
         return "vi"
     if re.search(r'[\uac00-\ud7af]', text):
@@ -289,19 +285,13 @@ def detect_source_lang(text: str) -> str:
 
 
 def translate_to_english(text: str) -> tuple[str, str]:
-    """
-    Dịch nguyên cả câu theo ngữ cảnh qua chuỗi 3 tầng:
-    1. Google Translate API (cả câu)
-    2. MyMemory Translator API (cả câu - dự phòng khi Google bị giới hạn)
-    3. Offline Dictionary (chỉ dùng khi mất kết nối Internet hoàn toàn)
-    """
-    if text.isascii():
+    # Bỏ qua ký hiệu tiền tệ (£, €, ¥) khi kiểm tra tiếng Anh gốc
+    cleaned_check = re.sub(r'[£€¥₩₫]', '', text)
+    if cleaned_check.isascii():
         return text.strip(), "Tiếng Anh gốc (Direct)"
 
     src_lang = detect_source_lang(text)
-
     if HAS_ONLINE_TRANSLATOR:
-        # Tầng 1: Google Translate (dịch cả câu)
         try:
             res_google = GoogleTranslator(source=src_lang, target="en").translate(text)
             if res_google and res_google.strip() and res_google.strip().lower() != text.strip().lower():
@@ -309,17 +299,17 @@ def translate_to_english(text: str) -> tuple[str, str]:
         except Exception:
             pass
 
-        # Tầng 2: MyMemory Translator (dịch cả câu dự phòng)
-        try:
-            mm_src = "vi-VN" if src_lang == "vi" else ("ko-KR" if src_lang == "ko" else ("ja-JP" if src_lang == "ja" else ("zh-CN" if src_lang == "zh-CN" else "auto")))
-            res_mm = MyMemoryTranslator(source=mm_src, target="en-US").translate(text)
-            if res_mm and res_mm.strip() and res_mm.strip().lower() != text.strip().lower():
-                return res_mm.strip(), f"MyMemory API ({src_lang} → en)"
-        except Exception:
-            pass
+        # MyMemory không hỗ trợ source="auto", chỉ gọi khi xác định rõ mã ngôn ngữ
+        if src_lang != "auto":
+            try:
+                mm_map = {"vi": "vi-VN", "ko": "ko-KR", "ja": "ja-JP", "zh-CN": "zh-CN"}
+                res_mm = MyMemoryTranslator(source=mm_map[src_lang], target="en-US").translate(text)
+                if res_mm and res_mm.strip() and res_mm.strip().lower() != text.strip().lower():
+                    return res_mm.strip(), f"MyMemory API ({src_lang} → en)"
+            except Exception:
+                pass
 
-    # Tầng 3: Mất mạng hoàn toàn mới dùng Offline
-    return fallback_offline_translate(text), "Offline Fallback (Kiểm tra lại kết nối mạng)"
+    return fallback_offline_translate(text), "Offline Fallback"
 
 
 def preprocess_sms_optimized(text: str) -> str:
@@ -339,6 +329,88 @@ def preprocess_sms_optimized(text: str) -> str:
     text = re.sub(r'[^a-z0-9_\s]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+
+def analyze_message_hybrid(raw_text: str, en_text: str, vectorizer, model) -> dict:
+    cleaned = preprocess_sms_optimized(en_text)
+    vec = vectorizer.transform([cleaned])
+    nb_prob = float(model.predict_proba(vec)[0][1])
+
+    risk_flags = []
+    boost = 0.0
+    low_raw = raw_text.lower()
+    low_en = en_text.lower()
+
+    if re.search(r'(http\S+|www\.\S+|(bit\.ly|tinyurl\.com|goo\.gl|t\.co)/\S+|\S+\.(vn|com|net|org|io)/\S+)', low_raw):
+        risk_flags.append("🔗 Chứa liên kết / URL lạ")
+        boost += 0.35
+
+    if re.search(r'(\+?\d[\d\-\.\s]{7,}\d)', raw_text):
+        risk_flags.append("📞 Chứa số điện thoại")
+        boost += 0.15
+
+    if re.search(r'(\d+\s*(triệu|tr|vnđ|vnd|usd|\$|£|won|만원|万円)|trúng thưởng|tiền mặt|vay|prize|cash|loan)', low_raw + " " + low_en):
+        risk_flags.append("💰 Dấu hiệu tiền thưởng / Tài chính")
+        boost += 0.20
+
+    if re.search(r'(khẩn cấp|cập nhật|xác minh|khóa thẻ|truy cập|bấm vào|urgent|immediately|verify|update|claim)', low_raw + " " + low_en):
+        risk_flags.append("⚡ Thúc giục hành động gấp")
+        boost += 0.15
+
+    if len(risk_flags) >= 2 or "🔗 Chứa liên kết / URL lạ" in risk_flags:
+        final_prob = min(0.999, max(nb_prob, nb_prob + boost * (1 - nb_prob)))
+    else:
+        final_prob = nb_prob
+
+    return {
+        "nb_prob": nb_prob,
+        "final_prob": final_prob,
+        "risk_flags": risk_flags
+    }
+
+
+def extract_top_keywords(en_text: str, vectorizer, model, top_n: int = 5):
+    vocab = vectorizer.vocabulary_
+    log_odds = model.feature_log_prob_[1] - model.feature_log_prob_[0]
+    cleaned = preprocess_sms_optimized(en_text)
+    tokens = list(dict.fromkeys(cleaned.split()))
+
+    scored = []
+    for t in tokens:
+        if t in vocab:
+            scored.append((t, float(log_odds[vocab[t]])))
+
+    scored.sort(key=lambda x: abs(x[1]), reverse=True)
+    return scored[:top_n]
+
+
+def log_active_learning_feedback(msg_obj: dict, predicted_label: str, reporter: str):
+    """Lưu các mẫu AI phân loại nhầm vào CSV phục vụ tái huấn luyện (Active Learning)."""
+    file_exists = FEEDBACK_CSV_PATH.exists()
+    corrected_label = "ham" if predicted_label == "spam" else "spam"
+    with open(FEEDBACK_CSV_PATH, mode="a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["timestamp", "reporter", "raw_text", "en_text", "prob_spam", "ai_predicted", "user_corrected_label"])
+        writer.writerow([
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            reporter,
+            msg_obj["text"],
+            msg_obj.get("en_text", msg_obj["text"]),
+            round(msg_obj["prob_spam"], 4),
+            predicted_label,
+            corrected_label
+        ])
+
+
+def count_feedback_samples() -> int:
+    if not FEEDBACK_CSV_PATH.exists():
+        return 0
+    try:
+        with open(FEEDBACK_CSV_PATH, mode="r", encoding="utf-8-sig") as f:
+            return max(0, sum(1 for _ in f) - 1)
+    except Exception:
+        return 0
 
 
 @st.cache_resource
@@ -384,7 +456,9 @@ def load_messages() -> list:
             "en_text": "Quan, are we still meeting at the library at 3pm this afternoon to review the report slides?",
             "trans_mode": "Google Translate (vi → en)",
             "time": "14:05",
-            "prob_spam": 0.0018
+            "prob_spam": 0.0018,
+            "nb_prob": 0.0018,
+            "risk_flags": []
         },
         {
             "from_user": "spammer",
@@ -393,7 +467,9 @@ def load_messages() -> list:
             "en_text": "URGENT! Your subscriber has won a 50,000,000 VND cash prize! Call 09061701461 now to claim!",
             "trans_mode": "Google Translate (vi → en)",
             "time": "14:08",
-            "prob_spam": 0.9992
+            "prob_spam": 0.9992,
+            "nb_prob": 0.9992,
+            "risk_flags": ["📞 Chứa số điện thoại", "💰 Dấu hiệu tiền thưởng / Tài chính", "⚡ Thúc giục hành động gấp"]
         }
     ]
     save_messages(default_msgs)
@@ -445,7 +521,6 @@ if not MODEL_PATH.exists() or not VEC_PATH.exists():
 vectorizer, model = load_artifacts()
 users_db = load_users()
 
-# --- KHÔI PHỤC PHIÊN ĐĂNG NHẬP TỪ URL KHI F5 ---
 url_user = st.query_params.get("user", None)
 if "logged_in_user" not in st.session_state or st.session_state.logged_in_user is None:
     if url_user and url_user in users_db:
@@ -454,278 +529,460 @@ if "logged_in_user" not in st.session_state or st.session_state.logged_in_user i
         st.session_state.logged_in_user = None
 
 # ==============================================================================
-# TRANG 1: MÀN HÌNH ĐĂNG NHẬP / ĐĂNG KÝ TÀI KHOẢN
+# TRANG 1: MÀN HÌNH ĐĂNG NHẬP / ĐĂNG KÝ TÀI KHOẢN (CHỈNH CHU, LIỀN KHỐI)
 # ==============================================================================
 if st.session_state.logged_in_user is None or st.session_state.logged_in_user not in users_db:
-    _, center_col, _ = st.columns([1, 1.35, 1])
+    st.markdown("""
+    <style>
+    /* Căn chỉnh toàn bộ Card đăng nhập thành 1 khối thống nhất */
+    div[data-testid="column"]:nth-of-type(2) [data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(19, 27, 46, 0.92);
+        border: 1px solid rgba(56, 189, 248, 0.22) !important;
+        border-radius: 22px !important;
+        padding: 1.8rem 2rem 2rem 2rem !important;
+        box-shadow: 0 25px 60px rgba(0, 0, 0, 0.65);
+        margin-top: 1.5rem;
+    }
+    /* Làm đẹp thanh Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #0b1120;
+        padding: 5px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .stTabs [data-baseweb="tab"] {
+        flex: 1;
+        justify-content: center;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-weight: 600;
+        color: #94a3b8;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(90deg, rgba(37, 99, 235, 0.25), rgba(79, 70, 229, 0.25)) !important;
+        color: #38bdf8 !important;
+        border-bottom: none !important;
+    }
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    _, center_col, _ = st.columns([1.15, 1.2, 1.15])
     with center_col:
-        st.markdown(
-            '<div class="login-box">'
-            '<div class="login-title">🛡️ SafeChat Pro</div>'
-            '<div class="login-sub">Hệ thống Nhắn tin Đa ngôn ngữ Tích hợp AI Lọc Tin nhắn Rác</div>',
-            unsafe_allow_html=True
-        )
+        with st.container(border=True):
+            st.markdown(
+                '<div style="text-align:center; margin-bottom: 1.2rem;">'
+                '<div style="font-size:2.4rem; line-height:1.1; margin-bottom:0.3rem;">🛡️</div>'
+                '<div class="login-title" style="margin-bottom:0.2rem;">SafeChat Pro</div>'
+                '<div style="color:#94a3b8; font-size:0.86rem;">Nền tảng Nhắn tin Đa ngôn ngữ &amp; Lọc Tin nhắn Rác AI</div>'
+                '</div>',
+                unsafe_allow_html=True
+            )
 
-        tab_login, tab_reg = st.tabs(["🔐 Đăng nhập", "📝 Tạo tài khoản mới"])
+            tab_login, tab_reg = st.tabs(["🔐 Đăng nhập", "📝 Đăng ký tài khoản"])
 
-        with tab_login:
-            st.caption("Đăng nhập nhanh bằng tài khoản mẫu hoặc nhập thông tin bên dưới:")
-            q_u1, q_u2, q_u3 = st.columns(3)
-            if q_u1.button("👤 Vào nick Quân", use_container_width=True):
-                login_user("quan")
-                st.rerun()
-            if q_u2.button("👤 Vào nick Bảo", use_container_width=True):
-                login_user("bao")
-                st.rerun()
-            if q_u3.button("🚨 Vào nick Spammer", use_container_width=True):
-                login_user("spammer")
-                st.rerun()
+            with tab_login:
+                st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+                with st.form("login_form", border=False):
+                    u_input = st.text_input("Tên đăng nhập", placeholder="Nhập username (vd: bao, quan)...")
+                    p_input = st.text_input("Mật khẩu", type="password", placeholder="Nhập mật khẩu (mặc định: 123)...")
+                    st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
+                    btn_login = st.form_submit_button("Đăng nhập vào Phòng Chat ➤", type="primary", use_container_width=True)
 
-            st.divider()
-            with st.form("login_form"):
-                u_input = st.text_input("Tên đăng nhập (Username):", placeholder="Ví dụ: quan")
-                p_input = st.text_input("Mật khẩu:", type="password", placeholder="Mật khẩu mặc định: 123")
-                btn_login = st.form_submit_button("Đăng nhập vào Phòng Chat ➤", type="primary", use_container_width=True)
+                    if btn_login:
+                        uname = u_input.strip().lower()
+                        if uname in users_db and users_db[uname]["password"] == p_input:
+                            login_user(uname)
+                            st.rerun()
+                        else:
+                            st.error("Tên đăng nhập hoặc mật khẩu không chính xác!")
 
-                if btn_login:
-                    uname = u_input.strip().lower()
-                    if uname in users_db and users_db[uname]["password"] == p_input:
-                        login_user(uname)
-                        st.rerun()
-                    else:
-                        st.error("Sai tên đăng nhập hoặc mật khẩu!")
+                st.markdown(
+                    '<div style="text-align:center; color:#64748b; font-size:0.78rem; margin: 0.9rem 0 0.6rem 0;">'
+                    '— hoặc truy cập nhanh tài khoản Demo —'
+                    '</div>',
+                    unsafe_allow_html=True
+                )
+                q_u1, q_u2, q_u3 = st.columns(3)
+                if q_u1.button("👤 Quân", use_container_width=True, help="Đăng nhập nhanh nick Hà Minh Quân"):
+                    login_user("quan")
+                    st.rerun()
+                if q_u2.button("👤 Bảo", use_container_width=True, help="Đăng nhập nhanh nick Đoàn Quốc Bảo"):
+                    login_user("bao")
+                    st.rerun()
+                if q_u3.button("🚨 Spammer", use_container_width=True, help="Đăng nhập nhanh nick Tổng đài Quảng cáo"):
+                    login_user("spammer")
+                    st.rerun()
 
-        with tab_reg:
-            with st.form("register_form"):
-                new_u = st.text_input("Tên đăng nhập mới (viết liền không dấu):")
-                new_name = st.text_input("Tên hiển thị (Ví dụ: Nguyễn Văn A):")
-                new_p = st.text_input("Mật khẩu:", type="password")
-                btn_reg = st.form_submit_button("Đăng ký & Đăng nhập", type="primary", use_container_width=True)
+            with tab_reg:
+                st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+                with st.form("register_form", border=False):
+                    new_name = st.text_input("Tên hiển thị", placeholder="Ví dụ: Nguyễn Văn A")
+                    new_u = st.text_input("Tên đăng nhập (viết liền không dấu)", placeholder="Ví dụ: nguyenvana")
+                    c_p1, c_p2 = st.columns(2)
+                    new_p = c_p1.text_input("Mật khẩu", type="password", placeholder="••••••••")
+                    new_p2 = c_p2.text_input("Xác nhận mật khẩu", type="password", placeholder="••••••••")
+                    st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
+                    btn_reg = st.form_submit_button("Tạo tài khoản & Bắt đầu ➤", type="primary", use_container_width=True)
 
-                if btn_reg:
-                    uname = new_u.strip().lower()
-                    if not uname or not new_name.strip() or not new_p:
-                        st.warning("Vui lòng điền đầy đủ thông tin.")
-                    elif uname in users_db:
-                        st.error("Tên đăng nhập này đã tồn tại!")
-                    else:
-                        users_db[uname] = {
-                            "password": new_p,
-                            "display_name": new_name.strip(),
-                            "role": "Thành viên"
-                        }
-                        save_users(users_db)
-                        login_user(uname)
-                        st.rerun()
-
-        st.markdown("</div>", unsafe_allow_html=True)
+                    if btn_reg:
+                        uname = new_u.strip().lower()
+                        if not uname or not new_name.strip() or not new_p:
+                            st.warning("Vui lòng điền đầy đủ tất cả các trường.")
+                        elif not re.match(r'^[a-z0-9_]{3,20}$', uname):
+                            st.warning("Tên đăng nhập dài 3–20 ký tự, chỉ gồm chữ thường không dấu, số hoặc dấu gạch dưới (_).")
+                        elif new_p != new_p2:
+                            st.error("Mật khẩu xác nhận không khớp!")
+                        elif uname in users_db:
+                            st.error("Tên đăng nhập này đã có người sử dụng!")
+                        else:
+                            users_db[uname] = {
+                                "password": new_p,
+                                "display_name": new_name.strip(),
+                                "role": "Thành viên"
+                            }
+                            save_users(users_db)
+                            login_user(uname)
+                            st.rerun()
     st.stop()
 
 # ==============================================================================
-# TRANG 2: KHÔNG GIAN NHẮN TIN & PHÂN TÍCH AI CÁ NHÂN (SAU KHI ĐĂNG NHẬP)
+# TRANG 2: KHÔNG GIAN LÀM VIỆC CHÍNH (BƯỚC 4: HOÀN THIỆN)
 # ==============================================================================
 me = st.session_state.logged_in_user
 me_info = users_db[me]
+other_users = [u for u in users_db.keys() if u != me]
 
-engine_badge = (
-    "🌐 Dual-Engine Translation (Google + MyMemory)"
-    if HAS_ONLINE_TRANSLATOR else
-    "⚡ Chế độ Dịch Offline Dự phòng"
-)
+# --- SIDEBAR ---
+with st.sidebar:
+    st.markdown("### 🛡️ SafeChat Pro")
+    st.caption(f"Tài khoản: **{me_info['display_name']}** (`@{me}`)")
+    st.divider()
 
-nav_l, nav_r = st.columns([3.5, 1])
-with nav_l:
-    st.markdown(
-        f'<div class="top-nav">'
-        f'<div class="nav-logo">🛡️ SafeChat Pro <span style="font-size:0.85rem; font-weight:500; color:#94a3b8; -webkit-text-fill-color:#94a3b8;">| Xin chào, <b>{html.escape(me_info["display_name"])}</b> (@{me})</span></div>'
-        f'<div style="font-size:0.8rem; color:#34d399; background:rgba(16,185,129,0.12); padding:4px 12px; border-radius:999px; border:1px solid rgba(52,211,153,0.3);">{engine_badge}</div>'
-        f'</div>',
-        unsafe_allow_html=True
+    st.markdown("#### ⚙️ Cấu hình Bộ lọc AI")
+    my_threshold = st.slider(
+        "Ngưỡng chặn Spam:",
+        min_value=0.10, max_value=0.90, value=0.50, step=0.05,
+        help="Tin nhắn có xác suất Spam lớn hơn ngưỡng này sẽ tự động bị chặn."
     )
-with nav_r:
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    use_hybrid_boost = st.toggle(
+        "🧠 Bật Hybrid AI (Bắt Link Phishing)",
+        value=True,
+        help="Kết hợp Naive Bayes với bộ nhận diện URL rút gọn, số điện thoại và tiền thưởng."
+    )
+    reveal_spam = st.toggle("👁️ Mở khóa xem tin rác bị chặn", value=False)
+
+    st.divider()
+    st.markdown("#### 🔄 Active Learning")
+    fb_count = count_feedback_samples()
+    st.caption(f"Mẫu báo cáo sai đã lưu: **{fb_count}** mẫu (`feedback_errors.csv`)")
+
+    st.divider()
+    st.markdown("#### 🗂️ Quản lý Dữ liệu")
+    confirm_clear = st.checkbox("Xác nhận xóa đoạn chat hiện tại")
+    btn_clear_chat = st.button("🧹 Xóa lịch sử chat", disabled=not confirm_clear, use_container_width=True)
+
+    st.divider()
+    engine_text = "Online (Google + MyMemory)" if HAS_ONLINE_TRANSLATOR else "Offline Dictionary"
+    st.caption(f"🌐 Dịch thuật: **{engine_text}**")
     if st.button("🚪 Đăng xuất", use_container_width=True):
         logout_user()
         st.rerun()
 
-other_users = [u for u in users_db.keys() if u != me]
-c_target, c_thresh, c_reveal, c_refresh = st.columns([1.4, 1.3, 1.1, 0.7])
+# --- TABS CHỨC NĂNG CHÍNH ---
+tab_chat_mode, tab_batch_mode = st.tabs(["💬 Phòng Chat & AI X-Ray", "📂 Quét File Hàng Loạt (Batch Audit)"])
 
-with c_target:
-    target_user = st.selectbox(
-        "💬 Đang nhắn tin với:",
-        other_users,
-        format_func=lambda u: f"{users_db[u]['display_name']} (@{u})"
-    )
-with c_thresh:
-    my_threshold = st.slider(
-        f"🛡️ Ngưỡng chặn Spam của {me_info['display_name']}:",
-        0.10, 0.90, 0.50, 0.05
-    )
-with c_reveal:
-    reveal_spam = st.toggle("👁️ Mở khóa xem tin rác bị chặn", value=False)
-with c_refresh:
-    st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
-    if st.button("🔄 Làm mới", use_container_width=True):
-        st.rerun()
-
-all_messages = load_messages()
-conv_messages = [
-    m for m in all_messages
-    if (m["from_user"] == me and m["to_user"] == target_user)
-    or (m["from_user"] == target_user and m["to_user"] == me)
-]
-
-# --- CHIA 2 CỘT: KHUNG CHAT (TRÁI) & BẢNG PHÂN TÍCH AI RIÊNG (PHẢI) ---
-col_chat, col_ai = st.columns([1.45, 1], gap="large")
-
-with col_chat:
-    chat_bubbles = []
-    if not conv_messages:
-        chat_bubbles.append(
-            f'<div style="text-align:center; color:#64748b; margin-top:160px;">'
-            f'Chưa có tin nhắn nào giữa bạn và <b>{html.escape(users_db[target_user]["display_name"])}</b>.<br>'
-            f'Nhập tin nhắn bằng bất kỳ ngôn ngữ nào bên dưới!</div>'
-        )
-    else:
-        for m in conv_messages:
-            is_mine = (m["from_user"] == me)
-            sender_label = "Bạn" if is_mine else users_db[m["from_user"]]["display_name"]
-            safe_sender = html.escape(sender_label)
-            safe_text = html.escape(m["text"])
-            prob_pct = m["prob_spam"] * 100
-            is_spam_for_me = (m["prob_spam"] >= my_threshold)
-
-            if is_mine:
-                status_tag = (
-                    f'<div class="tag-spam">⚠️ Cảnh báo: Tin bạn gửi có {prob_pct:.1f}% dấu hiệu Spam</div>'
-                    if is_spam_for_me else
-                    f'<div class="tag-ham">✓ Đã gửi (Độ an toàn: {100 - prob_pct:.1f}%)</div>'
-                )
-                chat_bubbles.append(
-                    f'<div class="msg-right">'
-                    f'<div class="msg-info">{safe_sender} • {m["time"]}</div>'
-                    f'<div class="bubble-sent">{safe_text}</div>'
-                    f'{status_tag}'
-                    f'</div>'
-                )
-            else:
-                if is_spam_for_me:
-                    if reveal_spam:
-                        body = f'<div class="bubble-blocked">🚨 <b>[Tin rác đã mở khóa - {prob_pct:.1f}% Spam]</b><br>{safe_text}</div>'
-                    else:
-                        body = f'<div class="bubble-blocked">🔒 <i>AI đã chặn tin nhắn từ <b>{safe_sender}</b> vì phát hiện {prob_pct:.1f}% nguy cơ lừa đảo/rác. Bật nút "Mở khóa xem tin rác" phía trên để đọc.</i></div>'
-                    chat_bubbles.append(
-                        f'<div class="msg-left">'
-                        f'<div class="msg-info">{safe_sender} • {m["time"]}</div>'
-                        f'{body}'
-                        f'<div class="tag-spam">🛡️ Đã lọc vào Hộp thư rác của bạn</div>'
-                        f'</div>'
-                    )
-                else:
-                    chat_bubbles.append(
-                        f'<div class="msg-left">'
-                        f'<div class="msg-info">{safe_sender} • {m["time"]}</div>'
-                        f'<div class="bubble-recv">{safe_text}</div>'
-                        f'<div class="tag-ham">✓ An toàn ({100 - prob_pct:.1f}%)</div>'
-                        f'</div>'
-                    )
-
-    full_chat_html = f'<div class="chat-container">{"".join(chat_bubbles)}</div>'
-    st.markdown(full_chat_html, unsafe_allow_html=True)
-
-    # Nút chèn mẫu câu đa ngôn ngữ nhanh
-    if "msg_draft" not in st.session_state:
-        st.session_state.msg_draft = ""
-
-    b1, b2, b3 = st.columns(3)
-    if b1.button("🇻🇳 Tin thường (Việt)", use_container_width=True):
-        st.session_state.msg_draft = "Chào bạn, tối nay nhớ gửi file báo cáo LaTeX cho mình nhé!"
-    if b2.button("🚨 Tin lừa đảo (Việt)", use_container_width=True):
-        st.session_state.msg_draft = "Bưu kiện của bạn giao không thành công do sai địa chỉ. Vui lòng cập nhật thông tin ngay tại bit.ly/giao-hang-vn để tránh bị hoàn trả hàng!"
-    if b3.button("🇰🇷 Tin rác (Tiếng Hàn)", use_container_width=True):
-        st.session_state.msg_draft = "긴급 공지! 무담보 즉시 대출 최대 5,000만원 승인 완료! 지금 바로 010-9876-5432로 전화하여 현금을 수령하세요!"
-
-    with st.form("chat_send_form", clear_on_submit=True):
-        col_in, col_btn = st.columns([4.2, 1])
-        text_val = col_in.text_input(
-            "Tin nhắn:",
-            value=st.session_state.msg_draft,
-            placeholder=f"Nhập tin nhắn bằng bất kỳ ngôn ngữ nào gửi cho {users_db[target_user]['display_name']}...",
+# ==============================================================================
+# TAB 1: PHÒNG CHAT BẢO MẬT & X-RAY
+# ==============================================================================
+with tab_chat_mode:
+    c_target, c_refresh = st.columns([4.5, 1])
+    with c_target:
+        target_user = st.selectbox(
+            "💬 Đang trò chuyện cùng:",
+            other_users,
+            format_func=lambda u: f"{users_db[u]['display_name']} (@{u})",
             label_visibility="collapsed"
         )
-        send_clicked = col_btn.form_submit_button("Gửi ➤", type="primary", use_container_width=True)
-
-        if send_clicked and text_val.strip():
-            en_version, trans_mode = translate_to_english(text_val.strip())
-            cleaned = preprocess_sms_optimized(en_version)
-            vec = vectorizer.transform([cleaned])
-            prob_spam = float(model.predict_proba(vec)[0][1])
-
-            all_messages.append({
-                "from_user": me,
-                "to_user": target_user,
-                "text": text_val.strip(),
-                "en_text": en_version,
-                "trans_mode": trans_mode,
-                "time": datetime.now().strftime("%H:%M"),
-                "prob_spam": prob_spam
-            })
-            save_messages(all_messages)
-            st.session_state.msg_draft = ""
+    with c_refresh:
+        if st.button("🔄 Làm mới", use_container_width=True):
             st.rerun()
 
-with col_ai:
-    my_received = [m for m in all_messages if m["to_user"] == me]
-    my_spam_blocked = sum(1 for m in my_received if m["prob_spam"] >= my_threshold)
-    my_ham_ok = len(my_received) - my_spam_blocked
+    all_messages = load_messages()
 
-    st.markdown(f'<div class="inspector-card"><div class="inspector-title">📊 Bộ Lọc Cá Nhân của {html.escape(me_info["display_name"])}</div>', unsafe_allow_html=True)
-    s1, s2, s3 = st.columns(3)
-    s1.metric("Tin nhận được", len(my_received))
-    s2.metric("An toàn (Ham)", my_ham_ok)
-    s3.metric("Đã chặn (Spam)", my_spam_blocked)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="inspector-card"><div class="inspector-title">🔬 AI X-Ray: Soi Chi Tiết Tin Nhắn</div>', unsafe_allow_html=True)
-    if conv_messages:
-        msg_options = list(range(len(conv_messages) - 1, -1, -1))
-        selected_idx = st.selectbox(
-            "Chọn tin nhắn để xem phân tích AI:",
-            msg_options,
-            format_func=lambda i: f"[{conv_messages[i]['time']}] {users_db[conv_messages[i]['from_user']]['display_name']}: {conv_messages[i]['text'][:32]}..."
-        )
-        target_msg = conv_messages[selected_idx]
-        p_spam = target_msg["prob_spam"]
-        is_spam_flag = p_spam >= my_threshold
-        en_analyzed = target_msg.get("en_text", target_msg["text"])
-        t_mode = target_msg.get("trans_mode", "Chuẩn hóa trực tiếp")
-
-        st.caption(f"Bản dịch cả câu ({t_mode}):")
-        hl_html = build_highlighted_html(en_analyzed, vectorizer, model)
-        st.markdown(f'<div class="hl-box">{hl_html}</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div style="font-size:0.75rem; color:#94a3b8; margin-bottom:10px;">'
-            '<span class="tok-spam">Đỏ</span> = Kéo về Spam &nbsp;|&nbsp; '
-            '<span class="tok-ham">Xanh</span> = Kéo về Ham'
-            '</div>',
-            unsafe_allow_html=True
-        )
-
-        st.progress(p_spam, text=f"Xác suất Spam: {p_spam*100:.2f}% (Ngưỡng của bạn: {my_threshold*100:.0f}%)")
-
-        if is_spam_flag:
-            st.error("🚨 Phân loại: TIN NHẮN RÁC (SPAM)")
-        else:
-            st.success("✅ Phân loại: TIN NHẮN THƯỜNG (HAM)")
-    else:
-        st.info("Cuộc trò chuyện chưa có tin nhắn nào để phân tích.")
-
-    if st.button("🧹 Xóa lịch sử cuộc trò chuyện này", use_container_width=True):
+    if btn_clear_chat and confirm_clear:
         remaining = [
             m for m in all_messages
             if not ((m["from_user"] == me and m["to_user"] == target_user) or (m["from_user"] == target_user and m["to_user"] == me))
         ]
         save_messages(remaining)
         st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+
+    conv_messages = [
+        m for m in all_messages
+        if (m["from_user"] == me and m["to_user"] == target_user)
+        or (m["from_user"] == target_user and m["to_user"] == me)
+    ]
+
+    col_chat, col_ai = st.columns([1.45, 1], gap="large")
+
+    with col_chat:
+        chat_bubbles = []
+        if not conv_messages:
+            chat_bubbles.append(
+                f'<div style="text-align:center; color:#64748b; margin-top:165px;">'
+                f'Chưa có tin nhắn nào giữa bạn và <b>{html.escape(users_db[target_user]["display_name"])}</b>.<br>'
+                f'Nhập tin nhắn bằng bất kỳ ngôn ngữ nào bên dưới!</div>'
+            )
+        else:
+            for m in conv_messages:
+                is_mine = (m["from_user"] == me)
+                sender_label = "Bạn" if is_mine else users_db[m["from_user"]]["display_name"]
+                safe_sender = html.escape(sender_label)
+                safe_text = html.escape(m["text"])
+                effective_prob = m["prob_spam"] if use_hybrid_boost else m.get("nb_prob", m["prob_spam"])
+                prob_pct = effective_prob * 100
+                is_spam_for_me = (effective_prob >= my_threshold)
+
+                if is_mine:
+                    status_tag = (
+                        f'<div class="tag-spam">⚠️ Cảnh báo: Tin bạn gửi có {prob_pct:.1f}% dấu hiệu Spam</div>'
+                        if is_spam_for_me else
+                        f'<div class="tag-ham">✓ Đã gửi (Độ an toàn: {100 - prob_pct:.1f}%)</div>'
+                    )
+                    chat_bubbles.append(
+                        f'<div class="msg-right">'
+                        f'<div class="msg-info">{safe_sender} • {m["time"]}</div>'
+                        f'<div class="bubble-sent">{safe_text}</div>'
+                        f'{status_tag}'
+                        f'</div>'
+                    )
+                else:
+                    if is_spam_for_me:
+                        if reveal_spam:
+                            body = f'<div class="bubble-blocked">🚨 <b>[Tin rác đã mở khóa - {prob_pct:.1f}% Spam]</b><br>{safe_text}</div>'
+                        else:
+                            body = f'<div class="bubble-blocked">🔒 <i>AI đã chặn tin nhắn từ <b>{safe_sender}</b> ({prob_pct:.1f}% nguy cơ lừa đảo). Bật "Mở khóa xem tin rác" ở thanh bên trái để đọc.</i></div>'
+                        chat_bubbles.append(
+                            f'<div class="msg-left">'
+                            f'<div class="msg-info">{safe_sender} • {m["time"]}</div>'
+                            f'{body}'
+                            f'<div class="tag-spam">🛡️ Đã lọc vào Hộp thư rác</div>'
+                            f'</div>'
+                        )
+                    else:
+                        chat_bubbles.append(
+                            f'<div class="msg-left">'
+                            f'<div class="msg-info">{safe_sender} • {m["time"]}</div>'
+                            f'<div class="bubble-recv">{safe_text}</div>'
+                            f'<div class="tag-ham">✓ An toàn ({100 - prob_pct:.1f}%)</div>'
+                            f'</div>'
+                        )
+
+        st.markdown(f'<div class="chat-container">{"".join(chat_bubbles)}</div>', unsafe_allow_html=True)
+
+        if "msg_draft" not in st.session_state:
+            st.session_state.msg_draft = ""
+
+        sample_map = {
+            "— Chọn nhanh mẫu tin nhắn thử nghiệm —": "",
+            "🇻🇳 Tin thường: Hẹn gửi báo cáo LaTeX": "Chào bạn, tối nay nhớ gửi file báo cáo LaTeX cho mình nhé!",
+            "🚨 Lừa đảo (Việt): Giả mạo giao hàng bit.ly": "Bưu kiện của bạn giao không thành công do sai địa chỉ. Vui lòng cập nhật thông tin ngay tại bit.ly/giao-hang-vn để tránh bị hoàn trả hàng!",
+            "🇰🇷 Tin rác (Hàn): Cho vay tiền mặt khẩn cấp": "긴급 공지! 무담보 즉시 대출 최대 5,000만원 승인 완료! 지금 바로 010-9876-5432로 전화하여 현금을 수령하세요!"
+        }
+        selected_sample = st.selectbox(
+            "Mẫu thử nhanh:",
+            list(sample_map.keys()),
+            label_visibility="collapsed"
+        )
+        if sample_map[selected_sample]:
+            st.session_state.msg_draft = sample_map[selected_sample]
+
+        with st.form("chat_send_form", clear_on_submit=True):
+            col_in, col_btn = st.columns([4.5, 1])
+            text_val = col_in.text_input(
+                "Tin nhắn:",
+                value=st.session_state.msg_draft,
+                placeholder=f"Nhập tin nhắn bằng bất kỳ ngôn ngữ nào gửi cho {users_db[target_user]['display_name']}...",
+                label_visibility="collapsed"
+            )
+            send_clicked = col_btn.form_submit_button("Gửi ➤", type="primary", use_container_width=True)
+
+            if send_clicked and text_val.strip():
+                en_version, trans_mode = translate_to_english(text_val.strip())
+                analysis = analyze_message_hybrid(text_val.strip(), en_version, vectorizer, model)
+
+                all_messages.append({
+                    "from_user": me,
+                    "to_user": target_user,
+                    "text": text_val.strip(),
+                    "en_text": en_version,
+                    "trans_mode": trans_mode,
+                    "time": datetime.now().strftime("%H:%M"),
+                    "prob_spam": analysis["final_prob"],
+                    "nb_prob": analysis["nb_prob"],
+                    "risk_flags": analysis["risk_flags"]
+                })
+                save_messages(all_messages)
+                st.session_state.msg_draft = ""
+                st.rerun()
+
+    with col_ai:
+        my_received = [m for m in all_messages if m["to_user"] == me]
+        my_spam_blocked = sum(
+            1 for m in my_received
+            if (m["prob_spam"] if use_hybrid_boost else m.get("nb_prob", m["prob_spam"])) >= my_threshold
+        )
+        my_ham_ok = len(my_received) - my_spam_blocked
+
+        st.markdown(f'<div class="inspector-card"><div class="inspector-title">📊 Thống Kê Bộ Lọc ({html.escape(me_info["display_name"])})</div>', unsafe_allow_html=True)
+        s0, s1, s2, s3 = st.columns(4)
+        s0.metric("Hội thoại", len(conv_messages))
+        s1.metric("Đã nhận", len(my_received))
+        s2.metric("An toàn", my_ham_ok)
+        s3.metric("Đã chặn", my_spam_blocked)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="inspector-card"><div class="inspector-title">🔬 AI X-Ray: Soi Chi Tiết Tin Nhắn</div>', unsafe_allow_html=True)
+        if conv_messages:
+            msg_options = list(range(len(conv_messages) - 1, -1, -1))
+            selected_idx = st.selectbox(
+                "Tin nhắn đang phân tích (mặc định mới nhất):",
+                msg_options,
+                format_func=lambda i: f"[{conv_messages[i]['time']}] {users_db[conv_messages[i]['from_user']]['display_name']}: {conv_messages[i]['text'][:32]}..."
+            )
+            target_msg = conv_messages[selected_idx]
+            nb_p = target_msg.get("nb_prob", target_msg["prob_spam"])
+            p_spam = target_msg["prob_spam"] if use_hybrid_boost else nb_p
+            is_spam_flag = p_spam >= my_threshold
+            en_analyzed = target_msg.get("en_text", target_msg["text"])
+            t_mode = target_msg.get("trans_mode", "Chuẩn hóa trực tiếp")
+            flags = target_msg.get("risk_flags", [])
+
+            if flags:
+                badges_html = "".join(f'<span class="risk-badge">{html.escape(f)}</span>' for f in flags)
+                st.markdown(f'<div style="margin-bottom:6px;">{badges_html}</div>', unsafe_allow_html=True)
+
+            st.caption(f"Bản dịch chuẩn hóa ({t_mode}):")
+            hl_html = build_highlighted_html(en_analyzed, vectorizer, model)
+            st.markdown(f'<div class="hl-box">{hl_html}</div>', unsafe_allow_html=True)
+
+            top_kws = extract_top_keywords(en_analyzed, vectorizer, model, top_n=5)
+            if top_kws:
+                kw_chips = []
+                for tok, sc in top_kws:
+                    if sc > 0:
+                        kw_chips.append(f'<span class="kw-chip-spam">{html.escape(tok)} (+{sc:.2f})</span>')
+                    else:
+                        kw_chips.append(f'<span class="kw-chip-ham">{html.escape(tok)} ({sc:.2f})</span>')
+                st.markdown(
+                    f'<div style="font-size:0.76rem; color:#94a3b8; margin-bottom:10px;">'
+                    f'<b>Top từ khóa quyết định (Log-Odds):</b><br>{"".join(kw_chips)}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            st.progress(p_spam, text=f"Điểm rủi ro tổng hợp: {p_spam*100:.2f}% (Naive Bayes gốc: {nb_p*100:.1f}%)")
+
+            if is_spam_flag:
+                st.error("🚨 Phân loại: TIN NHẮN RÁC (SPAM)")
+            else:
+                st.success("✅ Phân loại: TIN NHẮN THƯỜNG (HAM)")
+
+            # Vòng lặp Phản hồi Active Learning
+            fb_c1, fb_c2 = st.columns(2)
+            pred_str = "spam" if is_spam_flag else "ham"
+            if fb_c1.button("👍 AI đoán chuẩn", key=f"ok_{selected_idx}", use_container_width=True):
+                st.toast("Đã ghi nhận đánh giá chính xác!", icon="✅")
+            if fb_c2.button("👎 Báo cáo đoán sai", key=f"err_{selected_idx}", use_container_width=True):
+                log_active_learning_feedback(target_msg, pred_str, me)
+                st.toast("Đã lưu mẫu sai vào data/feedback_errors.csv để tái huấn luyện!", icon="📝")
+        else:
+            st.info("Cuộc trò chuyện chưa có tin nhắn nào để phân tích.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ==============================================================================
+# TAB 2: QUÉT FILE HÀNG LOẠT (BATCH AUDIT)
+# ==============================================================================
+with tab_batch_mode:
+    st.markdown("### 📂 Kiểm Tra & Lọc Tin Nhắn Hàng Loạt (Batch Audit)")
+    st.caption("Tải lên tệp `.txt` (mỗi dòng 1 tin nhắn) hoặc `.csv` (có cột `text` / `message` / `sms`) để quét tự động bằng Hybrid AI.")
+
+    b_col1, b_col2 = st.columns([2, 1])
+    with b_col1:
+        uploaded_file = st.file_uploader("Chọn tệp tin nhắn cần quét:", type=["txt", "csv"])
+    with b_col2:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        run_sample_batch = st.button("⚡ Chạy thử bộ dữ liệu mẫu (10 tin đa ngôn ngữ)", use_container_width=True)
+
+    batch_texts = []
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith(".txt"):
+                content = uploaded_file.read().decode("utf-8", errors="ignore")
+                batch_texts = [line.strip() for line in content.splitlines() if line.strip()]
+            elif uploaded_file.name.endswith(".csv"):
+                df_up = pd.read_csv(uploaded_file)
+                target_col = next((c for c in df_up.columns if c.lower() in ["text", "message", "sms", "content", "v2"]), df_up.columns[0])
+                batch_texts = df_up[target_col].dropna().astype(str).tolist()
+        except Exception as e:
+            st.error(f"Lỗi đọc file: {e}")
+
+    elif run_sample_batch:
+        batch_texts = [
+            "Chào cậu, sáng mai 7h30 có tiết thực hành mạng máy tính nhé.",
+            "CHÚC MỪNG! Bạn nhận được gói vay ưu đãi 80 triệu lãi suất 0%. Đăng ký tại bit.ly/vay-nhanh-24h",
+            "URGENT! You have won a £1,000 Walmart gift card. Go to http://bit.ly/claim-now to claim!",
+            "Mẹ ơi tối nay con về muộn một chút vì họp nhóm đồ án ở trường.",
+            "Cảnh báo: Tài khoản ngân hàng của bạn bị tạm khóa. Truy cập www.bank-verify-vn.com để mở lại.",
+            "긴급 공지! 무담보 즉시 대출 최대 5,000만원 승인 완료! 지금 바로 010-9876-5432로 전화하세요!",
+            "Hey, are we still grabbing lunch at 12:30 today?",
+            "FREE entry in 2 a wkly comp to win FA Cup final tkts! Text FA to 87121 now!",
+            "Nhờ bạn gửi giúp mình file slide thuyết trình FIT4013 qua email nhé.",
+            "Thuê bao quý khách được tặng 500.000đ vào tài khoản khuyến mãi, soạn DK gửi 9029 ngay!"
+        ]
+
+    if batch_texts:
+        results = []
+        prog_bar = st.progress(0, text="Đang phân tích dữ liệu...")
+        total_items = len(batch_texts)
+
+        for idx, raw_t in enumerate(batch_texts):
+            en_t, _ = translate_to_english(raw_t)
+            res = analyze_message_hybrid(raw_t, en_t, vectorizer, model)
+            score = res["final_prob"] if use_hybrid_boost else res["nb_prob"]
+            label = "SPAM" if score >= my_threshold else "HAM"
+            results.append({
+                "STT": idx + 1,
+                "Tin nhắn gốc": raw_t,
+                "Bản dịch chuẩn hóa": en_t,
+                "Phân loại": label,
+                "Xác suất Spam (%)": round(score * 100, 2),
+                "Dấu hiệu phát hiện": ", ".join(res["risk_flags"]) if res["risk_flags"] else "Không có"
+            })
+            prog_bar.progress((idx + 1) / total_items, text=f"Đã quét {idx + 1}/{total_items} tin nhắn...")
+
+        prog_bar.empty()
+        df_res = pd.DataFrame(results)
+
+        spam_cnt = int((df_res["Phân loại"] == "SPAM").sum())
+        ham_cnt = total_items - spam_cnt
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Tổng tin đã quét", total_items)
+        m2.metric("Tin an toàn (HAM)", ham_cnt)
+        m3.metric("Tin rác phát hiện (SPAM)", spam_cnt)
+
+        st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+        csv_bytes = df_res.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            label="📥 Tải xuống Báo cáo Kết quả (.CSV)",
+            data=csv_bytes,
+            file_name=f"safechat_audit_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            type="primary"
+        )
