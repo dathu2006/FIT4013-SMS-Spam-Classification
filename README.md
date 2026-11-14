@@ -55,6 +55,7 @@ Yêu cầu máy tính đã cài đặt **Python 3.9+**. Mở Terminal (PowerShel
 
 ```bash
 pip install -r requirements.txt
+py -m pip install deep-translator
 ```
 *(Trên Windows, nếu lệnh `pip` chưa được nhận diện, hãy dùng: `py -m pip install -r requirements.txt`)*
 
