@@ -4,6 +4,7 @@ Dự án thực hiện bài tập lớn cuối kỳ học phần **Nhập môn H
 
 - **Trường:** Đại học Đại Nam – Khoa Công nghệ Thông tin
 - **Giảng viên hướng dẫn:** ThS. Lê Thị Thùy Trang
+- **Nhóm thực hiện:** Nhóm 10
 - **Sinh viên thực hiện:** Đoàn Quốc Bảo, Hà Minh Quân
 
 ---
@@ -30,16 +31,20 @@ Bộ dữ liệu **SMS Spam Collection v.1** được thu thập và công bố 
 ```text
 FIT4013-SMS-Spam-Classification/
 ├── data/
-│   ├── SMSSpamCollection               # Bộ dữ liệu gốc (phân tách bằng ký tự Tab)
-│   └── readme.txt                      # Tài liệu mô tả và bản quyền gốc của bộ dữ liệu
+│   └── SMSSpamCollection               # Bộ dữ liệu gốc (phân tách bằng ký tự Tab)
 ├── models/
 │   ├── mnb_spam_classifier.joblib      # Mô hình Multinomial Naive Bayes tốt nhất (alpha=0.2)
 │   └── tfidf_vectorizer.joblib         # Bộ trích xuất đặc trưng TF-IDF đã huấn luyện
 ├── notebooks/
 │   └── 01_eda_and_modeling.ipynb       # Notebook thực hiện toàn bộ quy trình EDA -> Error Analysis
 ├── reports/
-│   ├── figures/                        # Các biểu đồ trực quan hóa dữ liệu và kết quả đánh giá
-│   └── main.tex                        # Mã nguồn báo cáo khoa học LaTeX
+│   ├── figures/                        # Thư mục chứa 4 biểu đồ và ảnh minh họa kết quả
+│   │   ├── eda_overview.png            # Biểu đồ phân tích khám phá dữ liệu (EDA)
+│   │   ├── confusion_matrices.png      # So sánh ma trận nhầm lẫn Baseline vs Tối ưu
+│   │   ├── top_features.png            # Top 15 đặc trưng (Unigram/Bigram) nhận diện Spam
+│   │   └── demo_app.png                # Ảnh chụp giao diện ứng dụng Web Demo
+│   ├── main.tex                        # Mã nguồn báo cáo khoa học LaTeX
+│   └── Bao_cao_BTL_FIT4013.pdf         # Báo cáo bài tập lớn định dạng PDF hoàn chỉnh
 ├── app.py                              # Ứng dụng Web Demo phân loại tin nhắn thời gian thực (Streamlit)
 ├── requirements.txt                    # Danh sách thư viện Python cần thiết
 ├── AI_USAGE.md                         # Khai báo minh bạch việc sử dụng công cụ AI hỗ trợ
@@ -50,27 +55,30 @@ FIT4013-SMS-Spam-Classification/
 
 ## 3. Hướng dẫn cài đặt và chạy chương trình
 
-### Bước 1: Chuẩn bị môi trường và cài đặt thư viện
+### Bước 1: Sao chép kho mã nguồn và cài đặt thư viện
 Yêu cầu máy tính đã cài đặt **Python 3.9+**. Mở Terminal (PowerShell hoặc Command Prompt) tại thư mục gốc của dự án và chạy lệnh:
 
 ```bash
-pip install -r requirements.txt
-py -m pip install deep-translator
+git clone https://github.com/dathu2006/FIT4013-SMS-Spam-Classification.git
+cd FIT4013-SMS-Spam-Classification
+py -m pip install -r requirements.txt
+py -m pip install notebook deep-translator
 ```
-*(Trên Windows, nếu lệnh `pip` chưa được nhận diện, hãy dùng: `py -m pip install -r requirements.txt`)*
 
 ### Bước 2: Chạy quy trình phân tích dữ liệu, huấn luyện và đánh giá mô hình
-1. Đảm bảo tệp dữ liệu `SMSSpamCollection` đã nằm trong thư mục `data/`.
-2. Mở tệp `notebooks/01_eda_and_modeling.ipynb` bằng VS Code hoặc Jupyter Notebook.
-3. Chọn **Run All** để thực thi toàn bộ quy trình từ khám phá dữ liệu (EDA), làm sạch trùng lặp, tiền xử lý, vector hóa, huấn luyện mô hình, phân tích lỗi đến xuất tệp mô hình vào thư mục `models/` và lưu biểu đồ vào `reports/figures/`.
+1. Đảm bảo tệp dữ liệu `SMSSpamCollection` đã nằm trong thư mục `data/` (mã nguồn sử dụng đường dẫn tương đối `Path.cwd().parent / 'data' / 'SMSSpamCollection'`, tuyệt đối không dùng đường dẫn cứng cá nhân).
+2. Khởi động **Jupyter Notebook** trên trình duyệt web bằng lệnh:
+   ```bash
+   py -m jupyter notebook
+   ```
+3. Truy cập thư mục `notebooks/`, mở tệp `01_eda_and_modeling.ipynb` và chọn **Run All** để thực thi toàn bộ quy trình từ khám phá dữ liệu (EDA), làm sạch trùng lặp, tiền xử lý, vector hóa, huấn luyện mô hình, phân tích lỗi đến xuất tệp mô hình vào `models/` và lưu biểu đồ vào `reports/figures/`.
 
 ### Bước 3: Khởi chạy ứng dụng Web Demo (Streamlit)
 Sau khi mô hình đã được huấn luyện và lưu trong thư mục `models/`, chạy lệnh sau tại thư mục gốc để mở giao diện kiểm thử trực quan trên trình duyệt:
 
 ```bash
-streamlit run app.py
+py -m streamlit run app.py
 ```
-*(Trên Windows, có thể dùng: `py -m streamlit run app.py`)*
 
 Ứng dụng sẽ khởi chạy tại địa chỉ mặc định: `http://localhost:8501`.
 
@@ -94,4 +102,4 @@ Toàn bộ thí nghiệm được chia theo tỷ lệ **80% Train (4.135 mẫu) 
 
 ## 5. Tài liệu tham khảo & Khai báo AI
 - Chi tiết về việc sử dụng công cụ AI hỗ trợ trong quá trình phát triển dự án được ghi rõ tại tệp [`AI_USAGE.md`](./AI_USAGE.md).
-- Báo cáo khoa học đầy đủ được trình bày tại thư mục [`reports/`](./reports/).
+- Báo cáo khoa học đầy đủ được trình bày tại tệp [`reports/Bao_cao_BTL_FIT4013.pdf`](./reports/Bao_cao_BTL_FIT4013.pdf) (mã nguồn LaTeX tại [`reports/main.tex`](./reports/main.tex)).
