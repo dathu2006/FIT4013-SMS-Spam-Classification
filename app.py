@@ -1,6 +1,5 @@
 import csv
 import html
-import io
 import json
 import re
 from datetime import datetime
@@ -26,10 +25,17 @@ st.set_page_config(
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
-#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] {
+#MainMenu, footer, [data-testid="stDecoration"] {
     display: none !important;
 }
-header {background-color: transparent !important;}
+header {
+    background-color: transparent !important;
+}
+[data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    color: #f8fafc !important;
+}
 
 .stApp {
     background: radial-gradient(circle at top right, #131c31 0%, #090d16 100%);
@@ -144,7 +150,7 @@ header {background-color: transparent !important;}
     font-weight: 600;
 }
 
-/* Card Phân tích bên phải */
+/* Card Phân tích */
 .inspector-card {
     background: #131b2e;
     border: 1px solid rgba(255, 255, 255, 0.08);
@@ -218,8 +224,22 @@ header {background-color: transparent !important;}
     border-radius: 6px;
     margin: 2px 4px 2px 0;
 }
+.meta-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.86rem;
+}
+.meta-label {
+    color: #94a3b8;
+}
+.meta-val {
+    color: #f1f5f9;
+    font-weight: 600;
+}
 
-.stTextInput input {
+.stTextInput input, .stTextArea textarea {
     background-color: #0b1120 !important;
     border: 1px solid rgba(255, 255, 255, 0.15) !important;
     color: #f8fafc !important;
@@ -285,7 +305,6 @@ def detect_source_lang(text: str) -> str:
 
 
 def translate_to_english(text: str) -> tuple[str, str]:
-    # Bỏ qua ký hiệu tiền tệ (£, €, ¥) khi kiểm tra tiếng Anh gốc
     cleaned_check = re.sub(r'[£€¥₩₫]', '', text)
     if cleaned_check.isascii():
         return text.strip(), "Tiếng Anh gốc (Direct)"
@@ -299,7 +318,6 @@ def translate_to_english(text: str) -> tuple[str, str]:
         except Exception:
             pass
 
-        # MyMemory không hỗ trợ source="auto", chỉ gọi khi xác định rõ mã ngôn ngữ
         if src_lang != "auto":
             try:
                 mm_map = {"vi": "vi-VN", "ko": "ko-KR", "ja": "ja-JP", "zh-CN": "zh-CN"}
@@ -329,6 +347,31 @@ def preprocess_sms_optimized(text: str) -> str:
     text = re.sub(r'[^a-z0-9_\s]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+
+def compute_meta_features(raw_text: str) -> dict:
+    """Trích xuất đặc trưng thống kê bề mặt của tin nhắn."""
+    char_count = len(raw_text)
+    words = raw_text.split()
+    word_count = len(words)
+    avg_word_len = round(sum(len(w) for w in words) / word_count, 1) if word_count > 0 else 0.0
+    digit_count = sum(c.isdigit() for c in raw_text)
+    digit_ratio = round((digit_count / char_count) * 100, 1) if char_count > 0 else 0.0
+    upper_words = sum(1 for w in words if len(w) >= 2 and w.isupper())
+    exclam_count = raw_text.count("!")
+    has_currency = bool(re.search(r'[£$€¥₩₫]|(vnd|vnđ|usd|gbp)', raw_text.lower()))
+    has_url = bool(re.search(r'(http\S+|www\.\S+|(bit\.ly|tinyurl\.com|goo\.gl|t\.co)/\S+|\S+\.(vn|com|net|org|io)/\S+)', raw_text.lower()))
+    return {
+        "char_count": char_count,
+        "word_count": word_count,
+        "avg_word_len": avg_word_len,
+        "digit_count": digit_count,
+        "digit_ratio": digit_ratio,
+        "upper_words": upper_words,
+        "exclam_count": exclam_count,
+        "has_currency": has_currency,
+        "has_url": has_url
+    }
 
 
 def analyze_message_hybrid(raw_text: str, en_text: str, vectorizer, model) -> dict:
@@ -365,11 +408,12 @@ def analyze_message_hybrid(raw_text: str, en_text: str, vectorizer, model) -> di
     return {
         "nb_prob": nb_prob,
         "final_prob": final_prob,
-        "risk_flags": risk_flags
+        "risk_flags": risk_flags,
+        "cleaned_tokens": cleaned
     }
 
 
-def extract_top_keywords(en_text: str, vectorizer, model, top_n: int = 5):
+def extract_top_keywords(en_text: str, vectorizer, model, top_n: int = 6):
     vocab = vectorizer.vocabulary_
     log_odds = model.feature_log_prob_[1] - model.feature_log_prob_[0]
     cleaned = preprocess_sms_optimized(en_text)
@@ -385,7 +429,6 @@ def extract_top_keywords(en_text: str, vectorizer, model, top_n: int = 5):
 
 
 def log_active_learning_feedback(msg_obj: dict, predicted_label: str, reporter: str):
-    """Lưu các mẫu AI phân loại nhầm vào CSV phục vụ tái huấn luyện (Active Learning)."""
     file_exists = FEEDBACK_CSV_PATH.exists()
     corrected_label = "ham" if predicted_label == "spam" else "spam"
     with open(FEEDBACK_CSV_PATH, mode="a", newline="", encoding="utf-8-sig") as f:
@@ -529,12 +572,11 @@ if "logged_in_user" not in st.session_state or st.session_state.logged_in_user i
         st.session_state.logged_in_user = None
 
 # ==============================================================================
-# TRANG 1: MÀN HÌNH ĐĂNG NHẬP / ĐĂNG KÝ TÀI KHOẢN (CHỈNH CHU, LIỀN KHỐI)
+# TRANG 1: MÀN HÌNH ĐĂNG NHẬP / ĐĂNG KÝ TÀI KHOẢN
 # ==============================================================================
 if st.session_state.logged_in_user is None or st.session_state.logged_in_user not in users_db:
     st.markdown("""
     <style>
-    /* Căn chỉnh toàn bộ Card đăng nhập thành 1 khối thống nhất */
     div[data-testid="column"]:nth-of-type(2) [data-testid="stVerticalBlockBorderWrapper"] {
         background: rgba(19, 27, 46, 0.92);
         border: 1px solid rgba(56, 189, 248, 0.22) !important;
@@ -543,7 +585,6 @@ if st.session_state.logged_in_user is None or st.session_state.logged_in_user no
         box-shadow: 0 25px 60px rgba(0, 0, 0, 0.65);
         margin-top: 1.5rem;
     }
-    /* Làm đẹp thanh Tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
         background-color: #0b1120;
@@ -650,7 +691,7 @@ if st.session_state.logged_in_user is None or st.session_state.logged_in_user no
     st.stop()
 
 # ==============================================================================
-# TRANG 2: KHÔNG GIAN LÀM VIỆC CHÍNH (BƯỚC 4: HOÀN THIỆN)
+# TRANG 2: KHÔNG GIAN LÀM VIỆC CHÍNH
 # ==============================================================================
 me = st.session_state.logged_in_user
 me_info = users_db[me]
@@ -692,11 +733,145 @@ with st.sidebar:
         logout_user()
         st.rerun()
 
-# --- TABS CHỨC NĂNG CHÍNH ---
-tab_chat_mode, tab_batch_mode = st.tabs(["💬 Phòng Chat & AI X-Ray", "📂 Quét File Hàng Loạt (Batch Audit)"])
+# --- TABS CHỨC NĂNG CHÍNH (3 CHẾ ĐỘ ĐẦY ĐỦ) ---
+tab_quick_mode, tab_chat_mode, tab_batch_mode = st.tabs([
+    "🔍 Kiểm tra Nhanh (Đơn lẻ)",
+    "💬 Phòng Chat & AI X-Ray",
+    "📂 Quét File Hàng Loạt (Batch Audit)"
+])
 
 # ==============================================================================
-# TAB 1: PHÒNG CHAT BẢO MẬT & X-RAY
+# TAB 1: KIỂM TRA NHANH TIN NHẮN ĐƠN LẺ (SANDBOX / INSPECTOR)
+# ==============================================================================
+with tab_quick_mode:
+    st.markdown("#### 🔍 Kiểm Tra & Giải Thích Tin Nhắn Đơn Lẻ")
+    st.caption("Dán trực tiếp một tin nhắn bất kỳ (Tiếng Anh, Tiếng Việt, Hàn, Nhật, Trung...) để phân tích đặc trưng và giải thích quyết định của mô hình AI.")
+
+    quick_samples = {
+        "— Chọn nhanh tin nhắn mẫu để kiểm thử —": "",
+        "🚨 [SPAM - Tiếng Anh gốc]: PRIVATE! Your 2004 Account Statement for 07742676969 shows 786 unredeemed Bonus Points...": "PRIVATE! Your 2004 Account Statement for 07742676969 shows 786 unredeemed Bonus Points. To claim call 08719180248 Identifier Code: 45239",
+        "🚨 [SPAM - Phishing Tiếng Việt]: Bưu kiện giao thất bại, cập nhật địa chỉ tại bit.ly/giao-hang-vn": "Bưu kiện của bạn giao không thành công do sai địa chỉ. Vui lòng cập nhật thông tin ngay tại bit.ly/giao-hang-vn để tránh bị hoàn trả hàng!",
+        "🚨 [SPAM - Tiếng Hàn]: Cho vay tín chấp khẩn cấp 50 triệu Won": "긴급 공지! 무담보 즉시 대출 최대 5,000만원 승인 완료! 지금 바로 010-9876-5432로 전화하여 현금을 수령하세요!",
+        "✅ [HAM - Tiếng Anh gốc]: Nhắc lịch học nhóm Database Systems": "Hi Quan, reminder that our Database Systems lab session tomorrow is moved to Room 402 at 1:30 PM. See you there!",
+        "✅ [HAM - Tiếng Việt]: Hẹn gặp thư viện chiều nay": "Quân ơi, chiều nay 3 giờ vẫn gặp nhau ở thư viện để xem lại slide báo cáo nhé?"
+    }
+
+    if "quick_input_text" not in st.session_state:
+        st.session_state.quick_input_text = ""
+
+    col_q_sel, col_q_clr = st.columns([4.5, 1])
+    with col_q_sel:
+        q_choice = st.selectbox("Mẫu thử nhanh:", list(quick_samples.keys()), label_visibility="collapsed", key="q_sample_box")
+    with col_q_clr:
+        if st.button("🗑️ Xóa trắng", use_container_width=True, key="btn_q_clear"):
+            st.session_state.quick_input_text = ""
+            st.session_state.pop("quick_last_result", None)
+            st.rerun()
+
+    if quick_samples[q_choice]:
+        st.session_state.quick_input_text = quick_samples[q_choice]
+
+    raw_quick = st.text_area(
+        "Nội dung tin nhắn cần kiểm tra:",
+        value=st.session_state.quick_input_text,
+        height=105,
+        placeholder="Nhập hoặc dán nội dung tin nhắn SMS cần kiểm tra vào đây..."
+    )
+
+    btn_analyze_quick = st.button("🔍 PHÂN TÍCH & DỰ ĐOÁN NGAY", type="primary", use_container_width=True)
+
+    if btn_analyze_quick and raw_quick.strip():
+        st.session_state.quick_input_text = raw_quick.strip()
+        en_q, t_mode_q = translate_to_english(raw_quick.strip())
+        res_q = analyze_message_hybrid(raw_quick.strip(), en_q, vectorizer, model)
+        meta_q = compute_meta_features(raw_quick.strip())
+        kws_q = extract_top_keywords(en_q, vectorizer, model, top_n=8)
+        st.session_state.quick_last_result = {
+            "raw": raw_quick.strip(),
+            "en": en_q,
+            "trans_mode": t_mode_q,
+            "analysis": res_q,
+            "meta": meta_q,
+            "keywords": kws_q
+        }
+
+    if "quick_last_result" in st.session_state:
+        q_res = st.session_state.quick_last_result
+        ana = q_res["analysis"]
+        meta = q_res["meta"]
+        score_q = ana["final_prob"] if use_hybrid_boost else ana["nb_prob"]
+        is_spam_q = score_q >= my_threshold
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        if is_spam_q:
+            st.error(f"🚨 KẾT LUẬN: TIN NHẮN RÁC (SPAM) — Xác suất rủi ro: {score_q*100:.2f}% (Ngưỡng hiện tại: {my_threshold*100:.0f}%)")
+        else:
+            st.success(f"✅ KẾT LUẬN: TIN NHẮN HỢP LỆ (HAM) — Độ an toàn: {(1 - score_q)*100:.2f}% | Xác suất Spam: {score_q*100:.2f}%")
+
+        q_left, q_right = st.columns([1, 1.35], gap="large")
+
+        with q_left:
+            st.markdown('<div class="inspector-card"><div class="inspector-title">📐 Đặc trưng Thống kê Bề mặt (Meta-Features)</div>', unsafe_allow_html=True)
+            meta_rows = [
+                ("Tổng số ký tự (char_count)", f"{meta['char_count']} ký tự"),
+                ("Tổng số từ (word_count)", f"{meta['word_count']} từ (TB: {meta['avg_word_len']} ký tự/từ)"),
+                ("Số lượng chữ số (digit_count)", f"{meta['digit_count']} chữ số ({meta['digit_ratio']}%)"),
+                ("Số từ viết IN HOA (upper_words)", f"{meta['upper_words']} từ"),
+                ("Số dấu chấm than (!)", f"{meta['exclam_count']}"),
+                ("Ký hiệu tiền tệ (£, $, €, VNĐ)", "CÓ" if meta["has_currency"] else "KHÔNG"),
+                ("Đường dẫn URL / Website", "CÓ" if meta["has_url"] else "KHÔNG"),
+                ("Điểm Multinomial Naive Bayes gốc", f"{ana['nb_prob']*100:.2f}%"),
+                ("Điểm Hybrid AI tổng hợp", f"{ana['final_prob']*100:.2f}%"),
+            ]
+            rows_html = "".join(
+                f'<div class="meta-row"><span class="meta-label">{k}</span><span class="meta-val">{v}</span></div>'
+                for k, v in meta_rows
+            )
+            st.markdown(rows_html, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with q_right:
+            st.markdown('<div class="inspector-card"><div class="inspector-title">🔬 Giải thích Quyết định Mô hình (Explainable AI)</div>', unsafe_allow_html=True)
+
+            if ana["risk_flags"]:
+                badges_q = "".join(f'<span class="risk-badge">{html.escape(f)}</span>' for f in ana["risk_flags"])
+                st.markdown(f'<div style="margin-bottom:8px;">{badges_q}</div>', unsafe_allow_html=True)
+
+            st.caption(f"1. Bản dịch trung gian ({q_res['trans_mode']}) & Tô màu trọng số:")
+            hl_q = build_highlighted_html(q_res["en"], vectorizer, model)
+            st.markdown(f'<div class="hl-box">{hl_q}</div>', unsafe_allow_html=True)
+
+            st.caption("2. Chuỗi văn bản sau Tiền xử lý chuyên biệt SMS (Tokenization):")
+            st.code(ana["cleaned_tokens"], language="text")
+
+            if q_res["keywords"]:
+                st.caption("3. Top Token / N-gram ảnh hưởng mạnh nhất (Log-Odds Spam vs Ham):")
+                df_kw = pd.DataFrame([
+                    {
+                        "Token / Đặc trưng": tok,
+                        "Trọng số Log-Odds": f"{sc:+.3f}",
+                        "Xu hướng tác động": "Tăng khả năng SPAM (+)" if sc > 0 else "Tăng khả năng HAM (-)"
+                    }
+                    for tok, sc in q_res["keywords"]
+                ])
+                st.dataframe(df_kw, use_container_width=True, hide_index=True)
+
+            q_fb1, q_fb2 = st.columns(2)
+            pred_q_str = "spam" if is_spam_q else "ham"
+            if q_fb1.button("👍 Kết quả chuẩn xác", key="q_fb_ok", use_container_width=True):
+                st.toast("Đã ghi nhận đánh giá chính xác!", icon="✅")
+            if q_fb2.button("👎 Báo cáo đoán sai (Active Learning)", key="q_fb_err", use_container_width=True):
+                log_active_learning_feedback(
+                    {"text": q_res["raw"], "en_text": q_res["en"], "prob_spam": score_q},
+                    pred_q_str,
+                    me
+                )
+                st.toast("Đã lưu mẫu sai vào data/feedback_errors.csv!", icon="📝")
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+# ==============================================================================
+# TAB 2: PHÒNG CHAT BẢO MẬT & X-RAY
 # ==============================================================================
 with tab_chat_mode:
     c_target, c_refresh = st.columns([4.5, 1])
@@ -892,7 +1067,6 @@ with tab_chat_mode:
             else:
                 st.success("✅ Phân loại: TIN NHẮN THƯỜNG (HAM)")
 
-            # Vòng lặp Phản hồi Active Learning
             fb_c1, fb_c2 = st.columns(2)
             pred_str = "spam" if is_spam_flag else "ham"
             if fb_c1.button("👍 AI đoán chuẩn", key=f"ok_{selected_idx}", use_container_width=True):
@@ -905,7 +1079,7 @@ with tab_chat_mode:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ==============================================================================
-# TAB 2: QUÉT FILE HÀNG LOẠT (BATCH AUDIT)
+# TAB 3: QUÉT FILE HÀNG LOẠT (BATCH AUDIT)
 # ==============================================================================
 with tab_batch_mode:
     st.markdown("### 📂 Kiểm Tra & Lọc Tin Nhắn Hàng Loạt (Batch Audit)")
